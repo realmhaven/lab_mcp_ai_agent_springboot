@@ -27,65 +27,90 @@ Build **step by step** an **AI agent** able to:
 
 ```text
 User
+  ↓  HTTP POST /api/run
+AgentController (Spring Boot)
   ↓
-LangChain4j Agent (Claude)
-  ↓ tool call (@Tool)
-MCP Client (Spring Boot)
-  ↓ JSON‑RPC (HTTP)
-MCP Server (GitHub tools)
+AgentService
+  ↓
+LangChain4j Agent (BacklogAgent)
+  ↓  tool call (@Tool)
+GitHubMcpTools (Spring Boot)
+  ↓
+McpHttpClient
+  ↓  JSON-RPC over HTTP
+MCP HTTP Wrapper (Node.js)
+  ↓  STDIO
+GitHub MCP Server (official)
   ↓
 GitHub API (Issues)
 ```
 
 ```mermaid
 flowchart LR
-  %% =========================
-  %% TARGET ARCHITECTURE
-  %% LangChain4j 1.10.0 + MCP + Claude + GitHub MCP Server
-  %% =========================
+    %% =========================
+    %% User / Client
+    %% =========================
+    User["👤 User<br/>(curl / UI)"]
 
-  subgraph STUDENT["✅ Developed by the student (this lab)"]
-    direction TB
+    %% =========================
+    %% Spring Boot App (Student)
+    %% =========================
+    subgraph SB["🔨 Spring Boot Application<br/>lab_mcp_ai_agent_springboot"]
+        AgentController["🔨 AgentController<br/>REST API<br/>POST /api/run"]
 
-    SB["Spring Boot App<br/>lab_mcp_ai_agent_springboot"]
-    API["REST API<br/>POST /api/agent/run"]
-    LC["LangChain4j Agent<br/>BacklogAgent + AiServices"]
-    TOOLS["LangChain4j @Tool Bridge<br/>GitHubMcpTools"]
-    MCPCLIENT["MCP HTTP Client<br/>JSON-RPC over HTTP<br/>(tools/list, tools/call)"]
+        AgentService["🔨 AgentService<br/>Orchestrates Agent"]
 
-    API --> SB
-    SB --> LC
-    LC --> TOOLS
-    TOOLS --> MCPCLIENT
-  end
+        BacklogAgent["🔨 BacklogAgent<br/>(LangChain4j AI Service)<br/>System + User Prompt"]
 
-  subgraph GITHUB["🧩 Provided by GitHub (not developed by students)"]
-    direction TB
+        LangChainConfig["🔨 LangChainConfig<br/>AnthropicChatModel<br/>Tool Wiring"]
 
-    MCPSERVER["GitHub MCP Server<br/>(official)"]
-    GHAPI["GitHub REST API<br/>Issues endpoints"]
-    GHREPO["GitHub Repository<br/>Issues / PRs / Actions"]
-    MCPSERVER --> GHAPI
-    GHAPI --> GHREPO
-  end
+        GitHubMcpTools["🔨 GitHubMcpTools<br/>@Tool createIssue(...)"]
 
-  subgraph ANTHROPIC["☁️ External service"]
-    direction TB
-    CLAUDE["Claude (Anthropic)<br/>Chat Model API"]
-  end
+        McpHttpClient["🔨 McpHttpClient<br/>JSON-RPC over HTTP"]
+    end
 
-  %% External calls
-  LC <-- "LLM requests / tool calls" --> CLAUDE
-  MCPCLIENT -->|"HTTP JSON-RPC<br/>/mcp"| MCPSERVER
+    %% =========================
+    %% External AI
+    %% =========================
+    Claude["📦 Anthropic Claude API<br/>(chat + tool-use)"]
 
-  %% Notes (optional)
-  classDef student fill:#eaffea,stroke:#2f7d32,stroke-width:2px,color:#0b3d0b;
-  classDef github fill:#eaf2ff,stroke:#1d4ed8,stroke-width:2px,color:#0b1d4d;
-  classDef external fill:#fff3e6,stroke:#b45309,stroke-width:2px,color:#4a2a00;
+    %% =========================
+    %% MCP Layer
+    %% =========================
+    subgraph MCP["📦 MCP Layer"]
+        MCPWrapper["🔨 MCP HTTP Wrapper<br/>(Node.js / Express)<br/>POST /mcp"]
+        GitHubMCP["📦 GitHub MCP Server<br/>(STDIO, official)"]
+    end
 
-  class SB,API,LC,TOOLS,MCPCLIENT student;
-  class MCPSERVER,GHAPI,GHREPO github;
-  class CLAUDE external;
+    %% =========================
+    %% GitHub
+    %% =========================
+    GitHub["📦 GitHub API<br/>(Issues, Repos)"]
+
+    %% =========================
+    %% Flows
+    %% =========================
+    User -->|HTTP POST /api/run| AgentController
+    AgentController --> AgentService
+    AgentService --> BacklogAgent
+
+    BacklogAgent -->|chat + tool schema| Claude
+    Claude -->|tool call request| BacklogAgent
+
+    BacklogAgent -->|Java @Tool call| GitHubMcpTools
+    GitHubMcpTools --> McpHttpClient
+
+    McpHttpClient -->|JSON-RPC HTTP| MCPWrapper
+    MCPWrapper -->|STDIO| GitHubMCP
+    GitHubMCP -->|REST| GitHub
+
+    GitHub --> GitHubMCP
+    GitHubMCP --> MCPWrapper
+    MCPWrapper --> McpHttpClient
+    McpHttpClient --> GitHubMcpTools
+    GitHubMcpTools --> BacklogAgent
+    BacklogAgent --> AgentService
+    AgentService --> AgentController
 ```
 
 ---
@@ -277,87 +302,160 @@ export GITHUB_TOKEN=github_pat_xxx
 
 ---
 
-## 🔹 STEP 0.5 — Run the Official GitHub MCP Server with Docker (Local Development)
+## 🔹 STEP 0.5 — Run the GitHub MCP HTTP Wrapper (Local Development)
 
-> ⚠️ **Mandatory step**  
-> This step is required to test the AI agent locally **before Docker/Kubernetes deployment**.
+In this step, students will run **both**:
+- the **official GitHub MCP Server (STDIO)** locally via Docker
+- the **GitHub MCP HTTP Wrapper** provided in the repository
 
-In this lab, the Spring Boot application **never calls GitHub REST APIs directly**.  
-All GitHub operations are delegated to the **official GitHub MCP Server**, executed locally **as a Docker container**.
+The wrapper exposes the STDIO-based MCP server over **HTTP**, making it usable
+by the Spring Boot application and later deployable to Docker / Minikube.
+
+> 📁 The wrapper source code is provided under:
+> `./mcp-github-http-wrapper`
 
 ---
 
-## 🧠 Why this step exists
+### 0.5.1 Prerequisites
 
-- The AI agent must not handle secrets or side effects directly
-- GitHub access is exposed as **MCP tools**
-- The MCP server:
-  - owns the GitHub token
-  - executes side effects (issue creation)
-  - isolates secrets from the LLM
+Ensure the following are installed on your development machine:
 
-```text
-Spring Boot (LangChain4j Agent)
-        ↓ MCP (tools/call)
-GitHub MCP Server (Docker / STDIO)
-        ↓
-GitHub REST API
+- **Node.js ≥ 20**
+- **npm**
+- **Docker**
+
+Verify:
+```bash
+node -v
+npm -v
+docker version
 ```
 
 ---
 
-## 🧰 Official Docker Image
+### 0.5.2 Configure GitHub Authentication
 
-GitHub provides an official MCP server image:
+Create a GitHub Personal Access Token (PAT):
 
-```
-ghcr.io/github/github-mcp-server
-```
+- Prefer a **Fine-grained token**
+- Grant:
+  - **Issues: Read and write**
+  - Access to the target repository
 
-This image exposes GitHub features as **MCP tools**.
-
----
-
-## 🔑 GitHub Authentication
-
-Create a **fine-grained GitHub Personal Access Token** with:
-
-- Repository access: **selected repository**
-- Permissions:
-  - Issues: **Read / Write**
-  - Metadata: **Read**
-
-Export it locally:
+Export the token:
 
 ```bash
-export GITHUB_PERSONAL_ACCESS_TOKEN="github_pat_xxx"
+export GITHUB_PERSONAL_ACCESS_TOKEN=ghp_xxxxxxxxxxxxxxxxx
 ```
-
-> ⚠️ This token is used **only by the MCP server**, never by the Spring Boot application.
 
 ---
 
-## STEP 0.5 Install + Run the wrapper locally (no Docker yet)
+### 0.5.3 Run the Official GitHub MCP Server (STDIO)
+
+The GitHub MCP server runs in **STDIO mode** and is required by the HTTP wrapper.
+
+Run it in a dedicated terminal:
+
+```bash
+docker run --rm -i   -e GITHUB_PERSONAL_ACCESS_TOKEN=$GITHUB_PERSONAL_ACCESS_TOKEN   ghcr.io/github/github-mcp-server
+```
+
+Expected behavior:
+- The container starts and waits for STDIO input
+- No HTTP port is exposed
+- This process must remain running
+
+⚠️ **Important**  
+Do not stop this container while working on the lab.
+
+---
+
+### 0.5.4 Install Dependencies for the HTTP Wrapper
+
+From the project root:
 
 ```bash
 cd mcp-github-http-wrapper
 npm install
-export GITHUB_PERSONAL_ACCESS_TOKEN="github_pat_xxx"
+```
+
+This installs:
+- Express
+- Model Context Protocol SDK
+- Required runtime dependencies
+
+---
+
+### 0.5.5 Start the MCP HTTP Wrapper
+
+In a **second terminal**, start the wrapper:
+
+```bash
 npm start
 ```
 
-Expected:
-```
+Expected output:
+```text
 GitHub MCP HTTP Wrapper listening on http://localhost:3333/mcp
 ```
 
-Validation (HTTP works now):
+Internally, the wrapper:
+- Connects to the running GitHub MCP server via **STDIO**
+- Exposes MCP tools over **HTTP JSON-RPC**
+
+---
+
+### 0.5.6 Verify MCP Tools Are Available
+
+In a **third terminal**, test the MCP endpoint:
 
 ```bash
 curl http://localhost:3333/mcp \
   -H "Content-Type: application/json" \
-  -d '{"jsonrpc":"2.0","id":"1","method":"tools/list","params":{}}'
+  -d '{
+    "jsonrpc": "2.0",
+    "id": "1",
+    "method": "tools/list",
+    "params": {}
+  }'
 ```
+
+You should receive a response containing GitHub tools, for example:
+
+```json
+{
+  "result": {
+    "tools": [
+      {
+        "name": "create_issue",
+        "description": "Create a GitHub issue"
+      }
+    ]
+  }
+}
+```
+
+⚠️ **Note:**  
+The exact tool name (e.g. `create_issue`) must be used later
+in the Spring Boot MCP client.
+
+---
+
+### 0.5.7 Architecture Reminder
+
+At this stage, the local architecture is:
+
+```text
+Spring Boot App (not started yet)
+  ↓ JSON-RPC (HTTP)
+GitHub MCP HTTP Wrapper (Node.js)
+  ↓ STDIO
+GitHub MCP Server (Docker)
+  ↓
+GitHub API
+```
+
+---
 
 # 🔹 STEP 1 — Project Bootstrap with Spring Initializr
 
@@ -429,6 +527,41 @@ Open your browser:
 You should see a **404 page** (expected, no controller yet).
 
 ✅ Spring Boot is running correctly.
+
+---
+
+# Target Recommended Package Layout
+```text
+net.filecode.agent
+├── Application.java
+├── config/
+│   ├── LangChainConfig.java
+│   ├── WebClientConfig.java
+│   └── PropertiesConfig.java           (optional)
+├── web/
+│   ├── AgentController.java
+│   └── DebugController.java            (optional)
+├── service/
+│   └── AgentService.java
+├── agent/
+│   ├── BacklogAgent.java               (LangChain4j AI Service interface)
+│   └── prompts/                        (optional: prompt constants)
+│       └── BacklogPrompts.java
+├── tools/
+│   ├── AgentTool.java                  (marker interface)
+│   └── github/
+│       └── GitHubMcpTools.java
+├── mcp/
+│   ├── McpHttpClient.java
+│   ├── McpToolNames.java               (constants for MCP tool names)
+│   └── dto/                            (optional, if you type JSON-RPC payloads)
+│       ├── JsonRpcRequest.java
+│       └── JsonRpcResponse.java
+├── domain/                             (optional)
+│   └── IssueDraft.java                 (title / body / metadata)
+└── util/                               (optional)
+    └── JsonUtils.java
+```
 
 ---
 
@@ -518,9 +651,13 @@ test { useJUnitPlatform() }
 `src/main/resources/application.yml`
 
 ```yaml
+github:
+  owner: ${GITHUB_OWNER}
+  repo: ${GITHUB_REPO}
+  
 anthropic:
   api-key: ${ANTHROPIC_API_KEY}
-  model: claude-sonnet-4
+  model: claude-opus-4-20250514
   timeout-seconds: 60
 
 mcp:
@@ -537,7 +674,7 @@ mcp:
 `src/main/java/com/example/agent/BacklogAgent.java`
 
 ```java
-package com.example.agent;
+package com.example.agent.agent;
 
 import dev.langchain4j.service.SystemMessage;
 import dev.langchain4j.service.UserMessage;
@@ -546,30 +683,35 @@ import dev.langchain4j.service.V;
 public interface BacklogAgent {
 
   @SystemMessage("""
-    You are a GitHub backlog agent.
-    When the user asks for a task, you MUST create a GitHub issue using the available tools.
-    The issue body must include:
-    - Context
-    - Goal
-    - Acceptance Criteria
-    Never expose secrets.
-    """)
-
+          You are a GitHub backlog agent.
+          
+          When the user asks to create a task/issue, you MUST call the available GitHub issue creation tool.
+          Do NOT claim tools are unavailable unless you attempted a tool call and it failed.
+          
+          The issue body must include:
+          - Context
+          - Goal
+          - Acceptance Criteria
+          
+          Never expose secrets.
+          The repository owner/repo are preconfigured. Do not ask for them.
+          """)
   @UserMessage("User request: {{prompt}}")
-  String run(@V("prompt") String prompt);
+  String handle(@V("prompt") String prompt);
 }
 ```
 
 ## 4.2 Spring Configuration: Claude model + Agent builder
 
-`src/main/java/com/example/config/LangChainConfig.java`
+`src/main/java/com/example/agent/config/LangChainConfig.java`
 
 ```java
-package com.example.config;
+package net.filecode.agent.config;
 
-import com.example.agent.BacklogAgent;
 import dev.langchain4j.model.anthropic.AnthropicChatModel;
 import dev.langchain4j.service.AiServices;
+import net.filecode.agent.BacklogAgent;
+import net.filecode.agent.tools.AgentTool;
 import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.context.annotation.Bean;
@@ -580,31 +722,31 @@ import java.util.List;
 
 @Configuration
 public class LangChainConfig {
-
   @Bean
   public AnthropicChatModel anthropicChatModel(
-      @Value("${anthropic.api-key}") String apiKey,
-      @Value("${anthropic.model}") String model,
-      @Value("${anthropic.max-tokens:800}") Integer maxTokens,
-      @Value("${anthropic.timeout-seconds:60}") Integer timeoutSeconds
+          @Value("${anthropic.api-key}") String apiKey,
+          @Value("${anthropic.model}") String model,
+          @Value("${anthropic.max-tokens:800}") Integer maxTokens,
+          @Value("${anthropic.timeout-seconds:60}") Integer timeoutSeconds
   ) {
     return AnthropicChatModel.builder()
-        .apiKey(apiKey)
-        .modelName(model)
-        .maxTokens(maxTokens)
-        .timeout(Duration.ofSeconds(timeoutSeconds))
-        .build();
+            .apiKey(apiKey)
+            .modelName(model)
+            .maxTokens(maxTokens)
+            .timeout(Duration.ofSeconds(timeoutSeconds))
+            .build();
   }
 
   @Bean
-  public BacklogAgent backlogAgent(AnthropicChatModel model,
-                                   ObjectProvider<List<Object>> toolBeansProvider) {
-    List<Object> toolBeans = toolBeansProvider.getIfAvailable(List::of);
+  public BacklogAgent backlogAgent(AnthropicChatModel model, List<AgentTool> tools) {
+
+    System.out.println("=== Agent tools loaded: " + tools.size() + " ===");
+    tools.forEach(t -> System.out.println(" - " + t.getClass().getName()));
 
     return AiServices.builder(BacklogAgent.class)
-        .chatLanguageModel(model)
-        .tools(toolBeans)
-        .build();
+            .chatModel(model)
+            .tools(tools.toArray())
+            .build();
   }
 }
 ```
@@ -613,10 +755,10 @@ public class LangChainConfig {
 
 # 🔹 STEP 5 — MCP HTTP Client (JSON-RPC over HTTP)
 
-`src/main/java/com/example/mcp/McpHttpClient.java`
+`src/main/java/com/example/agent/mcp/McpHttpClient.java`
 
 ```java
-package com.example.mcp;
+package com.example.agent.mcp;
 
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.http.MediaType;
@@ -625,10 +767,10 @@ import org.springframework.web.reactive.function.client.WebClient;
 import reactor.core.publisher.Mono;
 
 import java.util.Map;
+import java.util.UUID;
 
 @Component
 public class McpHttpClient {
-
   private final WebClient web;
   private final String path;
 
@@ -639,46 +781,61 @@ public class McpHttpClient {
     this.path = path;
   }
 
-  public Mono<Map> callTool(String toolName, Map<String, Object> arguments) {
+  public Mono<Object> callTool(String toolName, Map<String, Object> arguments) {
     Map<String, Object> payload = Map.of(
-        "jsonrpc", "2.0",
-        "id", "1",
-        "method", "tools/call",
-        "params", Map.of(
-            "name", toolName,
-            "arguments", arguments
-        )
+            "jsonrpc", "2.0",
+            "id", UUID.randomUUID().toString(),
+            "method", "tools/call",
+            "params", Map.of(
+                    "name", toolName,
+                    "arguments", arguments
+            )
     );
 
     return web.post()
-        .uri(path)
-        .contentType(MediaType.APPLICATION_JSON)
-        .bodyValue(payload)
-        .retrieve()
-        .bodyToMono(Map.class)
-        .map(resp -> {
-          if (resp.containsKey("error")) {
-            throw new RuntimeException("MCP error: " + resp.get("error"));
-          }
-          return (Map) resp.get("result");
-        });
+            .uri(path)
+            .contentType(MediaType.APPLICATION_JSON)
+            .bodyValue(payload)
+            .retrieve()
+            .onStatus(s -> s.isError(), r ->
+                    r.bodyToMono(String.class)
+                            .map(b -> new RuntimeException("MCP HTTP " + r.statusCode() + ": " + b)))
+            .bodyToMono(Map.class)
+            .map(resp -> {
+              if (resp.containsKey("error")) {
+                throw new RuntimeException("MCP error full response: " + resp);
+              }
+              Object result = resp.get("result");
+              if (result == null) {
+                throw new RuntimeException("MCP missing result, full response: " + resp);
+              }
+              return (Map) result;
+            });
   }
 
-  public Mono<Map> listTools() {
+  public Mono<Object> listTools() {
     Map<String, Object> payload = Map.of(
-        "jsonrpc", "2.0",
-        "id", "1",
-        "method", "tools/list",
-        "params", Map.of()
+            "jsonrpc", "2.0",
+            "id", UUID.randomUUID().toString(),
+            "method", "tools/list",
+            "params", Map.of()
     );
 
     return web.post()
-        .uri(path)
-        .contentType(MediaType.APPLICATION_JSON)
-        .bodyValue(payload)
-        .retrieve()
-        .bodyToMono(Map.class)
-        .map(resp -> (Map) resp.get("result"));
+            .uri(path)
+            .contentType(MediaType.APPLICATION_JSON)
+            .bodyValue(payload)
+            .retrieve()
+            .onStatus(s -> s.isError(), r ->
+                    r.bodyToMono(String.class)
+                            .map(b -> new RuntimeException("MCP HTTP " + r.statusCode() + ": " + b)))
+            .bodyToMono(Map.class)
+            .map(resp -> {
+              if (resp.containsKey("error")) {
+                throw new RuntimeException("MCP error: " + resp.get("error"));
+              }
+              return resp.get("result");
+            });
   }
 }
 ```
@@ -687,73 +844,113 @@ public class McpHttpClient {
 
 # 🔹 STEP 6 — MCP → LangChain4j Tool Bridge (@Tool)
 
-`src/main/java/com/example/tools/GitHubMcpTools.java`
+`src/main/java/com/example/agent/tools/AgentTool.java`
 
 ```java
-package com.example.tools;
+package com.example.agent.tools;
 
-import com.example.mcp.McpHttpClient;
+public interface AgentTool {
+}
+```
+
+`src/main/java/com/example/agent/tools/GitHubMcpTools.java`
+
+```java
+package com.example.agent.tools;
+
 import dev.langchain4j.agent.tool.P;
 import dev.langchain4j.agent.tool.Tool;
+import net.filecode.agent.mcp.McpHttpClient;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Component;
 
 import java.util.Map;
 
 @Component
-public class GitHubMcpTools {
+public class GitHubMcpTools implements AgentTool {
 
   private final McpHttpClient mcp;
+  private final String owner;
+  private final String repo;
 
-  public GitHubMcpTools(McpHttpClient mcp) {
+  public GitHubMcpTools(
+          McpHttpClient mcp,
+          @Value("${github.owner}") String owner,
+          @Value("${github.repo}") String repo
+  ) {
     this.mcp = mcp;
+    this.owner = owner;
+    this.repo = repo;
   }
 
-  @Tool("Create a GitHub issue using MCP. Use when the user asks to create a task.")
+  @Tool("Create a GitHub issue in the configured repository. Use when the user asks to create a task/issue.")
   public String createIssue(
-      @P("Repository owner (user or org)") String owner,
-      @P("Repository name") String repo,
-      @P("Issue title") String title,
-      @P("Issue body in Markdown") String body
+          @P("Issue title") String title,
+          @P("Issue body in Markdown") String body
   ) {
-    Map result = mcp.callTool("github_create_issue", Map.of(
-        "owner", owner,
-        "repo", repo,
-        "title", title,
-        "body", body
+    Map result = (Map) mcp.callTool("create_issue", Map.of(
+            "owner", owner,
+            "repo", repo,
+            "title", title,
+            "body", body
     )).block();
 
     return "Issue created successfully: " + result;
   }
 }
+
 ```
 
 ---
 
 # 🔹 STEP 7 — REST API to Trigger the Agent
 
-`src/main/java/com/example/api/AgentController.java`
+`src/main/java/com/example/agent/service/AgentService.java`
+```java
+package com.example.agent.service;
+
+import net.filecode.agent.BacklogAgent;
+import org.springframework.stereotype.Service;
+
+@Service
+public class AgentService {
+    private final BacklogAgent backlogAgent;
+
+    public AgentService(BacklogAgent backlogAgent) {
+        this.backlogAgent = backlogAgent;
+    }
+
+    public String run(String prompt) {
+        return backlogAgent.handle(prompt);
+    }
+}
+```
+
+`src/main/java/com/example/agent/web/AgentController.java`
 
 ```java
-package com.example.api;
+package com.example.agent.web;
 
-import com.example.agent.BacklogAgent;
-import org.springframework.web.bind.annotation.*;
+import net.filecode.agent.BacklogAgent;
+import net.filecode.agent.service.AgentService;
+import org.springframework.web.bind.annotation.PostMapping;
+import org.springframework.web.bind.annotation.RequestBody;
+import org.springframework.web.bind.annotation.RequestMapping;
+import org.springframework.web.bind.annotation.RestController;
 
 @RestController
 @RequestMapping("/api")
 public class AgentController {
 
-  private final BacklogAgent agent;
+  private final AgentService agentService;
 
-  public AgentController(BacklogAgent agent) {
-    this.agent = agent;
+  public AgentController(AgentService agentService) {
+    this.agentService = agentService;
   }
 
-  public record RunIn(String prompt) {}
-
-  @PostMapping("/agent/run")
-  public String run(@RequestBody RunIn in) {
-    return agent.run(in.prompt());
+  @PostMapping("/run")
+  public String run(@RequestBody String prompt) {
+    return agentService.run(prompt);
   }
 }
 ```
@@ -772,10 +969,10 @@ curl -s http://localhost:8080/api/agent/run \
 
 ## 8.1 Unit test the MCP bridge tool (no real MCP)
 
-`src/test/java/com/example/tools/GitHubMcpToolsTest.java`
+`src/test/java/com/example/agent/tools/GitHubMcpToolsTest.java`
 
 ```java
-package com.example.tools;
+package com.example.agent.tools;
 
 import com.example.mcp.McpHttpClient;
 import org.junit.jupiter.api.Test;
@@ -793,14 +990,14 @@ class GitHubMcpToolsTest {
   @Test
   void should_call_mcp_tool() {
     McpHttpClient mcp = mock(McpHttpClient.class);
-    when(mcp.callTool(eq("github_create_issue"), anyMap()))
+    when(mcp.callTool(eq("create_issue"), anyMap()))
         .thenReturn(Mono.just(Map.of("number", 42, "html_url", "https://github.com/x/y/issues/42")));
 
     GitHubMcpTools tools = new GitHubMcpTools(mcp);
     String result = tools.createIssue("x", "y", "title", "body");
 
     assertTrue(result.contains("Issue created successfully"));
-    verify(mcp, times(1)).callTool(eq("github_create_issue"), anyMap());
+    verify(mcp, times(1)).callTool(eq("create_issue"), anyMap());
   }
 }
 ```
@@ -815,10 +1012,10 @@ Run:
 
 # 🔹 STEP 9 — Integration Test (Spring context + endpoint)
 
-`src/test/java/com/example/api/AgentControllerIT.java`
+`src/test/java/com/example/agent/web/AgentControllerIT.java`
 
 ```java
-package com.example.api;
+package com.example.agent.web;
 
 import com.example.mcp.McpHttpClient;
 import org.junit.jupiter.api.Test;
@@ -845,10 +1042,10 @@ class AgentControllerIT {
 
   @Test
   void should_call_endpoint() {
-    when(mcp.callTool(eq("github_create_issue"), anyMap()))
+    when(mcp.callTool(eq("create_issue"), anyMap()))
         .thenReturn(Mono.just(Map.of("number", 1, "html_url", "https://github.com/o/r/issues/1")));
 
-    web.post().uri("/api/agent/run")
+    web.post().uri("/api/run")
         .bodyValue(Map.of("prompt", "Create a task to add OpenTelemetry"))
         .exchange()
         .expectStatus().isOk();
