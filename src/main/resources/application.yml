@@ -1,0 +1,17 @@
+spring:
+  application:
+    name: agent
+
+github:
+  owner: ${GITHUB_OWNER:realmhaven}
+  repo: ${GITHUB_REPO:lab_mcp_ai_agent_springboot}
+
+anthropic:
+  api-key: ${ANTHROPIC_API_KEY:demo}
+  model: claude-opus-4-20250514
+  max-tokens: 800
+  timeout-seconds: 60
+
+mcp:
+  base-url: ${MCP_BASE_URL:http://localhost:3333}
+  path: ${MCP_PATH:/mcp}
