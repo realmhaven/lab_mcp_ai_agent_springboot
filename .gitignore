@@ -26,5 +26,12 @@ replay_pid*
 /.gradle
 /build
 /.idea
+*.iml
+.vscode/
+.settings/
+.project
+.classpath
 /mcp-github-http-wrapper/node_modules
 /mcp-github-http-wrapper/package-lock.json
+gh_api.ps1
+.env
