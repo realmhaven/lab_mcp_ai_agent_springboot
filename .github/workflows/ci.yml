@@ -24,3 +24,17 @@ jobs:
 
       - name: Build & Test
         run: ./gradlew --no-daemon clean test
+
+      - name: Upload test reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-reports
+          path: build/reports/tests/test/
+          retention-days: 7
+
+      - name: Test Summary
+        if: always()
+        uses: test-summary/action@v2
+        with:
+          paths: build/test-results/test/*.xml
